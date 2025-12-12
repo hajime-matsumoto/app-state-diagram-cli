@@ -1,0 +1,140 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-phar:
+    name: Build Phar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: json, simplexml, dom, mbstring, libxml
+          tools: composer, box
+
+      - name: Install dependencies
+        run: composer install --no-dev --optimize-autoloader
+
+      - name: Build Phar
+        run: box compile
+
+      - name: Test Phar
+        run: |
+          php build/asd-cli.phar --version
+          php build/asd-cli.phar help
+
+      - name: Upload Phar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asd-cli-phar
+          path: build/asd-cli.phar
+
+  build-standalone:
+    name: Build Standalone (${{ matrix.os }}-${{ matrix.arch }})
+    needs: build-phar
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+          - os: linux
+            arch: aarch64
+            runner: ubuntu-latest
+          - os: macos
+            arch: x86_64
+            runner: macos-13
+          - os: macos
+            arch: aarch64
+            runner: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Phar
+        uses: actions/download-artifact@v4
+        with:
+          name: asd-cli-phar
+          path: build
+
+      - name: Download micro.sfx
+        run: |
+          mkdir -p build/micro
+
+          # Get latest PHP 8.3 micro from static-php.dev
+          MICRO_URL="https://dl.static-php.dev/static-php-cli/common/php-8.3.28-micro-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          echo "Downloading from: $MICRO_URL"
+
+          curl -fsSL -o build/micro/php-micro.tar.gz "$MICRO_URL"
+          cd build/micro
+          tar -xzf php-micro.tar.gz
+          ls -la
+
+      - name: Prepare micro.sfx
+        run: |
+          cd build/micro
+          MICRO=$(find . -name "micro.sfx" -o -name "micro" 2>/dev/null | head -1)
+          if [ -z "$MICRO" ]; then
+            MICRO=$(find . -type f -perm -111 | head -1)
+          fi
+          if [ -n "$MICRO" ]; then
+            mv "$MICRO" ../micro.sfx
+            chmod +x ../micro.sfx
+          else
+            echo "micro.sfx not found!"
+            exit 1
+          fi
+
+      - name: Create standalone binary
+        run: |
+          OUTPUT_NAME="asd-cli-${{ matrix.os }}-${{ matrix.arch }}"
+          cat build/micro.sfx build/asd-cli.phar > "build/${OUTPUT_NAME}"
+          chmod +x "build/${OUTPUT_NAME}"
+          echo "Binary size: $(du -h build/${OUTPUT_NAME})"
+
+      - name: Test standalone binary
+        run: |
+          OUTPUT_NAME="asd-cli-${{ matrix.os }}-${{ matrix.arch }}"
+          ./build/${OUTPUT_NAME} --version || true
+          ./build/${OUTPUT_NAME} help || true
+
+      - name: Upload standalone binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: asd-cli-${{ matrix.os }}-${{ matrix.arch }}
+          path: build/asd-cli-${{ matrix.os }}-${{ matrix.arch }}
+
+  release:
+    name: Create Release
+    needs: build-standalone
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/asd-cli-phar/asd-cli.phar
+            artifacts/asd-cli-linux-x86_64/asd-cli-linux-x86_64
+            artifacts/asd-cli-linux-aarch64/asd-cli-linux-aarch64
+            artifacts/asd-cli-macos-x86_64/asd-cli-macos-x86_64
+            artifacts/asd-cli-macos-aarch64/asd-cli-macos-aarch64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,17 @@
+{
+    "alias": "asd-cli.phar",
+    "main": "bin/asd-cli",
+    "output": "build/asd-cli.phar",
+    "directories": [
+        "src",
+        "vendor"
+    ],
+    "files": [
+        "vendor/autoload.php"
+    ],
+    "compactors": [
+        "KevinGH\\Box\\Compactor\\Php"
+    ],
+    "compression": "GZ",
+    "chmod": "0755"
+}
