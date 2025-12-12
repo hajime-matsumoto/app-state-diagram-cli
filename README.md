@@ -2,6 +2,8 @@
 
 ALPS CLI tool and MCP server - standalone binary, no PHP required.
 
+Based on [alps-asd/app-state-diagram](https://github.com/alps-asd/app-state-diagram).
+
 ## Installation
 
 ### Quick Install (Recommended)
