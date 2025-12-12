@@ -5,13 +5,27 @@ declare(strict_types=1);
 namespace AsdCli;
 
 use function array_key_exists;
+use function date;
+use function feof;
 use function fgets;
+use function file_exists;
+use function file_get_contents;
+use function file_put_contents;
+use function flush;
 use function fwrite;
+use function getmypid;
 use function is_array;
+use function is_string;
 use function json_decode;
 use function json_encode;
+use function register_shutdown_function;
+use function stream_select;
+use function stream_set_blocking;
+use function substr;
+use function time;
 use function trim;
 
+use const FILE_APPEND;
 use const STDERR;
 use const STDIN;
 use const STDOUT;
@@ -19,22 +33,82 @@ use const STDOUT;
 final class McpServer
 {
     private const SERVER_NAME = 'asd-cli';
-    private const SERVER_VERSION = '1.0.0';
+    private const SERVER_VERSION = '1.0.1';
     private const MCP_PROTOCOL_VERSION = '2024-11-05';
+    private const PING_INTERVAL_SECONDS = 30;
+
+    private int $pingCounter = 0;
 
     public function __construct(
         private AlpsService $service
     ) {
     }
 
+    private function log(string $message): void
+    {
+        $logFile = '/tmp/asd-mcp.log';
+        $timestamp = date('Y-m-d H:i:s');
+        file_put_contents($logFile, "[{$timestamp}] {$message}\n", FILE_APPEND);
+    }
+
     public function run(): void
     {
+        $this->log('Server started (PID: ' . getmypid() . ')');
+        register_shutdown_function(function (): void {
+            $error = error_get_last();
+            if ($error !== null) {
+                $this->log('SHUTDOWN ERROR: ' . json_encode($error));
+            } else {
+                $this->log('Clean shutdown');
+            }
+        });
+
         fwrite(STDERR, "Starting ASD MCP Server...\n");
         fwrite(STDERR, 'Server: ' . self::SERVER_NAME . ' v' . self::SERVER_VERSION . "\n");
         fwrite(STDERR, 'Protocol: MCP ' . self::MCP_PROTOCOL_VERSION . "\n\n");
 
-        while ($line = fgets(STDIN)) {
-            $request = json_decode(trim($line), true);
+        // Non-blocking mode with keepalive
+        stream_set_blocking(STDIN, false);
+
+        while (true) {
+            $read = [STDIN];
+            $write = null;
+            $except = null;
+
+            // Wait up to PING_INTERVAL_SECONDS for input
+            $ready = stream_select($read, $write, $except, self::PING_INTERVAL_SECONDS);
+
+            if ($ready === false) {
+                $this->log('stream_select failed');
+                break;
+            }
+
+            if ($ready === 0) {
+                // Timeout - send keepalive ping
+                $this->sendPing();
+                $this->log('Sent keepalive ping');
+                continue;
+            }
+
+            // Check if STDIN is closed
+            if (feof(STDIN)) {
+                $this->log('STDIN EOF detected');
+                break;
+            }
+
+            $line = fgets(STDIN);
+            if ($line === false) {
+                continue; // No data available yet
+            }
+
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $this->log('Received: ' . substr($line, 0, 100) . '...');
+
+            $request = json_decode($line, true);
 
             if (! is_array($request) || ! isset($request['jsonrpc'], $request['method'])) {
                 $this->handleMalformed($request);
@@ -44,11 +118,35 @@ final class McpServer
             $response = $this->handleRequest($request);
 
             if ($response !== null) {
-                $encoded = json_encode($response);
-                if ($encoded !== false) {
-                    fwrite(STDOUT, $encoded . "\n");
-                }
+                $this->writeResponse($response);
+                $this->log('Response OK for: ' . ($request['method'] ?? 'unknown'));
             }
+        }
+
+        $this->log('Loop ended');
+    }
+
+    private function sendPing(): void
+    {
+        $this->pingCounter++;
+        $ping = [
+            'jsonrpc' => '2.0',
+            'method' => 'ping',
+            'id' => 'server-ping-' . $this->pingCounter,
+        ];
+        fwrite(STDOUT, json_encode($ping) . "\n");
+        flush();
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     */
+    private function writeResponse(array $response): void
+    {
+        $encoded = json_encode($response);
+        if ($encoded !== false) {
+            fwrite(STDOUT, $encoded . "\n");
+            flush();
         }
     }
 
@@ -66,6 +164,7 @@ final class McpServer
         return match ($method) {
             'initialize' => $this->initialize($id),
             'notifications/initialized' => null,
+            'ping' => $this->handlePing($id),
             'tools/list' => $this->toolsList($id),
             'tools/call' => $this->toolsCall($id, $params),
             'resources/list' => $this->resourcesList($id),
@@ -98,6 +197,18 @@ final class McpServer
     /**
      * @return array<string, mixed>
      */
+    private function handlePing(mixed $id): array
+    {
+        return [
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => (object) [],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     private function toolsList(mixed $id): array
     {
         return [
@@ -111,12 +222,12 @@ final class McpServer
                         'inputSchema' => [
                             'type' => 'object',
                             'properties' => [
-                                'alps_content' => [
+                                'file_path' => [
                                     'type' => 'string',
-                                    'description' => 'ALPS profile content (XML or JSON)',
+                                    'description' => 'Path to ALPS profile file (XML or JSON)',
                                 ],
                             ],
-                            'required' => ['alps_content'],
+                            'required' => ['file_path'],
                         ],
                     ],
                     [
@@ -125,9 +236,9 @@ final class McpServer
                         'inputSchema' => [
                             'type' => 'object',
                             'properties' => [
-                                'alps_content' => [
+                                'file_path' => [
                                     'type' => 'string',
-                                    'description' => 'ALPS profile content (XML or JSON)',
+                                    'description' => 'Path to ALPS profile file (XML or JSON)',
                                 ],
                                 'use_title' => [
                                     'type' => 'boolean',
@@ -135,7 +246,7 @@ final class McpServer
                                     'default' => false,
                                 ],
                             ],
-                            'required' => ['alps_content'],
+                            'required' => ['file_path'],
                         ],
                     ],
                     [
@@ -183,10 +294,19 @@ final class McpServer
      */
     private function handleValidate(array $args): array
     {
-        $content = $args['alps_content'] ?? '';
+        $filePath = $args['file_path'] ?? '';
 
-        if (! is_string($content) || $content === '') {
-            return $this->errorResult('alps_content parameter is required');
+        if (! is_string($filePath) || $filePath === '') {
+            return $this->errorResult('file_path parameter is required');
+        }
+
+        if (! file_exists($filePath)) {
+            return $this->errorResult("File not found: {$filePath}");
+        }
+
+        $content = file_get_contents($filePath);
+        if ($content === false) {
+            return $this->errorResult("Failed to read file: {$filePath}");
         }
 
         $result = $this->service->validate($content);
@@ -209,11 +329,20 @@ final class McpServer
      */
     private function handleAlps2Dot(array $args): array
     {
-        $content = $args['alps_content'] ?? '';
+        $filePath = $args['file_path'] ?? '';
         $useTitle = (bool) ($args['use_title'] ?? false);
 
-        if (! is_string($content) || $content === '') {
-            return $this->errorResult('alps_content parameter is required');
+        if (! is_string($filePath) || $filePath === '') {
+            return $this->errorResult('file_path parameter is required');
+        }
+
+        if (! file_exists($filePath)) {
+            return $this->errorResult("File not found: {$filePath}");
+        }
+
+        $content = file_get_contents($filePath);
+        if ($content === false) {
+            return $this->errorResult("Failed to read file: {$filePath}");
         }
 
         $result = $this->service->alps2dot($content, $useTitle);

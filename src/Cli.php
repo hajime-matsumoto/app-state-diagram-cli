@@ -16,7 +16,7 @@ use const STDOUT;
 
 final class Cli
 {
-    private const VERSION = '1.0.0';
+    private const VERSION = '1.0.1';
 
     private AlpsService $service;
 
