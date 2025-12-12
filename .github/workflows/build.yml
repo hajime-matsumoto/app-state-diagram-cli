@@ -54,9 +54,6 @@ jobs:
             arch: aarch64
             runner: ubuntu-latest
           - os: macos
-            arch: x86_64
-            runner: macos-13
-          - os: macos
             arch: aarch64
             runner: macos-14
 
@@ -134,7 +131,6 @@ jobs:
             artifacts/asd-cli-phar/asd-cli.phar
             artifacts/asd-cli-linux-x86_64/asd-cli-linux-x86_64
             artifacts/asd-cli-linux-aarch64/asd-cli-linux-aarch64
-            artifacts/asd-cli-macos-x86_64/asd-cli-macos-x86_64
             artifacts/asd-cli-macos-aarch64/asd-cli-macos-aarch64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

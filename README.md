@@ -24,7 +24,6 @@ Download from [Releases](https://github.com/hajime-matsumoto/app-state-diagram-c
 |----------|--------|
 | Linux x86_64 | `asd-cli-linux-x86_64` |
 | Linux ARM64 | `asd-cli-linux-aarch64` |
-| macOS Intel | `asd-cli-macos-x86_64` |
 | macOS Apple Silicon | `asd-cli-macos-aarch64` |
 
 ### Using Phar (requires PHP)
